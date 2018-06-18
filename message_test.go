@@ -1,8 +1,12 @@
 package slurp
 
 import (
+	"fmt"
 	"io/ioutil"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -28,4 +32,36 @@ func TestParseInvite(t *testing.T) {
 		assert.Equal(t, message.Control().Via[0][0], "UDP")
 		assert.Equal(t, message.Control().Via[0][1], "pc33.atlanta.com")
 	}
+}
+
+func TestRenderInvite(t *testing.T) {
+	callId := uuid.New()
+	expected := fmt.Sprintf(`INVITE sip:sally@nasa.gov SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.2;branch=z9hG4bKg56fd
+Max-Forwards: 70
+From: Geoff <gharding@test.com>;tag=5gh941c
+To: Sally <sally@nasa.gov>
+Contact: <gharding@test.com>
+Call-ID: %s
+CSeq: 4 INVITE
+
+`, callId.String())
+	expected = strings.Replace(expected, "\n", "\r\n", -1)
+	invite := Invite{}
+	headers := invite.Headers()
+	control := invite.Control()
+	headers.To = "Sally"
+	headers.ToUri = "sally@nasa.gov"
+	headers.From = "Geoff"
+	headers.FromUri = "gharding@test.com"
+	control.FromTag = "5gh941c"
+	control.CallId = callId.String()
+	control.Sequence = 4
+	control.Via = [][2]string{[2]string{"TCP", "192.168.1.2"}}
+	control.ViaBranch = "z9hG4bKg56fd"
+	headers.Contact = "gharding@test.com"
+	headers.UserAgent = "slurp"
+	rendered := invite.Render()
+	t.Log("Rendered Invite: " + rendered)
+	assert.Equal(t, expected, rendered)
 }

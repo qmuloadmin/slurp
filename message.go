@@ -1,16 +1,17 @@
 package slurp
 
+/*
+Messages are models for the marshaling and unmarshaling of data from and to raw SIP messages
+*/
+
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
 
 	. "github.com/qmuloadmin/slurp/errors"
 )
-
-/*
-Messages are models for the marshaling and unmarshaling of data from and to raw SIP messages
-*/
 
 // SupportedMethods is a list of all request types currently supported by Slurp
 var SupportedMethods = [5]string{
@@ -35,10 +36,11 @@ type Message interface {
 	Parse(string) error
 	// Get the method/request type of the message
 	Method() string
-	Headers() CommonHeaders
-	Control() CallControlHeaders
+	Headers() *CommonHeaders
+	Control() *CallControlHeaders
 	Payload() []byte
 	StringPayload() string
+	SetPayload([]byte)
 }
 
 type Invite struct {
@@ -49,7 +51,16 @@ type Invite struct {
 }
 
 func (i *Invite) Render() string {
-	panic("not implemented")
+	if i.uri == "" {
+		i.uri = i.headers.ToUri
+	}
+	return fmt.Sprintf(
+		"INVITE sip:%s SIP/2.0\r\n%s\r\n%s\r\n\r\n",
+		i.uri,
+		renderHeaders(i.headers, i.control),
+		// we set CSeq outside of renderHeaders because it's method-dependent
+		"CSeq: "+fmt.Sprintf("%d", i.control.Sequence)+" INVITE",
+	)
 }
 
 // Parse takes a string representation of a message and unmarshalls
@@ -73,12 +84,12 @@ func (i *Invite) Method() string {
 	return "INVITE"
 }
 
-func (i *Invite) Headers() CommonHeaders {
-	return i.headers
+func (i *Invite) Headers() *CommonHeaders {
+	return &i.headers
 }
 
-func (i *Invite) Control() CallControlHeaders {
-	return i.control
+func (i *Invite) Control() *CallControlHeaders {
+	return &i.control
 }
 
 func (i *Invite) Payload() []byte {
@@ -87,6 +98,10 @@ func (i *Invite) Payload() []byte {
 
 func (i *Invite) StringPayload() string {
 	return string(i.payload)
+}
+
+func (i *Invite) SetPayload(data []byte) {
+	i.payload = data
 }
 
 // Contains header information common across all messages
@@ -236,6 +251,66 @@ func parseFromTo(value string, from *string, uri *string, tag *string) (err erro
 		}
 	}
 	return
+}
+
+func renderHeaders(h CommonHeaders, c CallControlHeaders) string {
+	lines := make([]string, 0, 10)
+	// Via, From, Contact, Call-ID and CSeq must always be included
+
+	// For sending a request, as we are a client or a server and not a Proxy
+	// we only should send one Via, ourselves.
+	via := fmt.Sprintf(
+		// TODO need to update transport dynamically once infra is built
+		"Via: SIP/2.0/%s %s;branch=%s",
+		c.Via[0][0], c.Via[0][1], c.ViaBranch,
+	)
+	lines = append(lines, via)
+
+	// set max forwards. RFC recommends this goes as one of first fields
+	if h.Forwards == 0 {
+		// Since we aren't a proxy, we're never forwarding requests. Set it to 70.
+		h.Forwards = 70
+	}
+	forwards := fmt.Sprintf("Max-Forwards: %d", h.Forwards)
+	lines = append(lines, forwards)
+
+	from := fmt.Sprintf(
+		// when rendering, there will always be a tag in From
+		"From: %s <%s>;tag=%s",
+		h.From, h.FromUri, c.FromTag,
+	)
+	lines = append(lines, from)
+
+	// If To is set, populate To next
+	to := fmt.Sprintf(
+		"To: %s <%s>",
+		h.To, h.ToUri,
+	)
+	if c.ToTag != "" {
+		to += ";tag=" + c.ToTag
+	}
+	lines = append(lines, to)
+
+	// Set contact always. If Contact is empty, use From
+	if h.Contact == "" {
+		h.Contact = h.FromUri
+	}
+	contact := fmt.Sprintf("Contact: <%s>", h.Contact)
+	lines = append(lines, contact)
+
+	// set call id
+	id := fmt.Sprintf("Call-ID: %s", c.CallId)
+	lines = append(lines, id)
+
+	// set content type and length, if present
+	if h.ContentType != "" {
+		_type := fmt.Sprintf("Content-Type: %s", h.ContentType)
+		length := fmt.Sprintf("Content-Length: %d", h.ContentLength)
+		lines = append(lines, _type)
+		lines = append(lines, length)
+	}
+
+	return strings.Join(lines, "\r\n")
 }
 
 // TODO
