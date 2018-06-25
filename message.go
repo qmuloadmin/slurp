@@ -37,83 +37,19 @@ type Message interface {
 	// Get the method/request type of the message
 	Method() string
 	Headers() *CommonHeaders
+	RawHeaders() string
 	Control() *CallControlHeaders
 	Payload() []byte
 	StringPayload() string
 	SetPayload([]byte)
 }
 
-type Invite struct {
-	headers CommonHeaders
-	control CallControlHeaders
-	payload []byte
-	uri     string
-}
-
-func (i *Invite) Render() string {
-	if i.uri == "" {
-		i.uri = i.headers.ToUri
-	}
-	return fmt.Sprintf(
-		"INVITE sip:%s SIP/2.0\r\n%s\r\n%s\r\n\r\n",
-		i.uri,
-		renderHeaders(i.headers, i.control),
-		// we set CSeq outside of renderHeaders because it's method-dependent
-		"CSeq: "+fmt.Sprintf("%d", i.control.Sequence)+" INVITE",
-	)
-}
-
-// Parse takes a string representation of a message and unmarshalls
-// the data into the appropriate struct fields.
-func (i *Invite) Parse(message string) (err error) {
-	// split lines
-	lines := strings.Split(message, "\n")
-	// ensure that the message is an INVITE message
-	// and the the protocol is SIP/2.0
-	err = validateMethod(lines[0], "INVITE")
-	// In an INVITE, URI should immediate follow INVITE
-	// TODO when enough infrastructure exists to accomplish it, add support for checking for unsupported URI schemes and responding with 416
-	i.uri = strings.Split(lines[0], " ")[1]
-	i.headers = CommonHeaders{}
-	i.control = CallControlHeaders{}
-	parseHeaders(lines, &i.headers, &i.control)
-	return
-}
-
-func (i *Invite) Method() string {
-	return "INVITE"
-}
-
-func (i *Invite) Headers() *CommonHeaders {
-	return &i.headers
-}
-
-func (i *Invite) Control() *CallControlHeaders {
-	return &i.control
-}
-
-func (i *Invite) Payload() []byte {
-	return i.payload
-}
-
-func (i *Invite) StringPayload() string {
-	return string(i.payload)
-}
-
-func (i *Invite) SetPayload(data []byte) {
-	i.payload = data
-}
-
 // Contains header information common across all messages
 type CommonHeaders struct {
-	// The "common name" like "Bob" or "Sally"
-	To string
-	// "The URI, like 123@example.com"
-	ToUri         string
-	From          string
-	FromUri       string
-	Contact       string
-	Forwards      int
+	To            Header
+	From          Header
+	Contacts      []Header
+	Forward       int //MaxForwards
 	UserAgent     string
 	ContentType   string
 	ContentLength int
@@ -131,9 +67,6 @@ type CallControlHeaders struct {
 	CallId       string
 	Sequence     int
 	Authenticate string
-	// Sets the To Tag element
-	ToTag   string
-	FromTag string
 }
 
 // Utility functions
@@ -167,6 +100,10 @@ func validateMethod(line string, method string) (err error) {
 	return
 }
 
+func parseParams(header string) map[string]string {
+	panic("Not Implemented")
+}
+
 func parseHeaders(lines []string, h *CommonHeaders, c *CallControlHeaders) error {
 	for i, line := range lines[1:] {
 		var err error
@@ -186,10 +123,31 @@ func parseHeaders(lines []string, h *CommonHeaders, c *CallControlHeaders) error
 		case "max-forwards":
 			var tempInt int64
 			tempInt, err = strconv.ParseInt(value, 10, 32)
-			h.Forwards = int(tempInt)
+			h.Forward = int(tempInt)
 		case "contact", "m":
-			h.Contact = value
+			// Contact is repeatable. Each Contact can have a friendly name, URI and params
+			// URI parameters are also possible but currently unsupported
+			// split on comma first, which gives us multiple contacts, if present
+			contacts := strings.Split(value, ",")
+			for _, each := range contacts {
+				contact := &Contact{}
+				// split the contact on ; to find params and the value/uri
+				parts := strings.Split(each, ";")
+				nameAndUri := strings.Split(parts[0], "<")
+				contact.SetValue(strings.TrimSpace(nameAndUri[0]))
+				if len(nameAndUri) > 1 {
+					uri := strings.TrimSpace(strings.Replace(nameAndUri[1], ">", "", -1))
+					contact.SetUri(uri)
+				}
+				// Now parse each parameter
+				for _, param := range parts[1:] {
+					parts := strings.SplitN(param, "=", 2)
+					contact.SetParam(strings.ToLower(parts[0]), parts[1])
+				}
+				h.Contacts = append(h.Contacts, contact)
+			}
 		case "content-type", "c":
+
 			h.ContentType = value
 		case "content-length", "l":
 			var tempInt int64
@@ -216,9 +174,15 @@ func parseHeaders(lines []string, h *CommonHeaders, c *CallControlHeaders) error
 		case "call-id", "i":
 			c.CallId = value
 		case "from", "f":
-			err = parseFromTo(value, &h.From, &h.FromUri, &c.FromTag)
+			if h.From == nil {
+				h.From = NewHeader(&ToFrom{})
+			}
+			err = parseFromTo(value, h.From)
 		case "to", "t":
-			err = parseFromTo(value, &h.To, &h.ToUri, &c.ToTag)
+			if h.To == nil {
+				h.To = NewHeader(&ToFrom{})
+			}
+			err = parseFromTo(value, h.To)
 		default:
 			log.Printf("Ignoring Unrecognized Header: %s", line)
 		}
@@ -233,7 +197,7 @@ func parseHeaders(lines []string, h *CommonHeaders, c *CallControlHeaders) error
 	return nil
 }
 
-func parseFromTo(value string, from *string, uri *string, tag *string) (err error) {
+func parseFromTo(value string, from Header) (err error) {
 	// split off main header from parameters
 	params := strings.Split(value, ";")
 	// assign the alias/name and uri separately
@@ -241,13 +205,13 @@ func parseFromTo(value string, from *string, uri *string, tag *string) (err erro
 	// but NAME may be in "" to include a space
 	// so for now, split on angle bracket, even though this isn't perfect
 	parts := strings.Split(params[0], "<")
-	*from = strings.TrimSpace(parts[0])
-	*uri = strings.Replace(parts[1], ">", "", 1)
+	from.SetValue(strings.TrimSpace(parts[0]))
+	from.SetUri(strings.Replace(parts[1], ">", "", 1))
 	// now find the from tag, if present, and store it
 	for _, param := range params[1:] {
 		if strings.HasPrefix(param, "tag=") {
 			parts = strings.SplitN(param, "=", 2)
-			*tag = parts[1]
+			from.SetParam("tag", parts[1])
 		}
 	}
 	return
@@ -267,36 +231,42 @@ func renderHeaders(h CommonHeaders, c CallControlHeaders) string {
 	lines = append(lines, via)
 
 	// set max forwards. RFC recommends this goes as one of first fields
-	if h.Forwards == 0 {
+	if h.Forward == 0 {
 		// Since we aren't a proxy, we're never forwarding requests. Set it to 70.
-		h.Forwards = 70
+		h.Forward = 70
 	}
-	forwards := fmt.Sprintf("Max-Forwards: %d", h.Forwards)
+	forwards := fmt.Sprintf("Max-Forwards: %d", h.Forward)
 	lines = append(lines, forwards)
 
 	from := fmt.Sprintf(
 		// when rendering, there will always be a tag in From
 		"From: %s <%s>;tag=%s",
-		h.From, h.FromUri, c.FromTag,
+		h.From.Value(), h.From.Uri(), h.From.Param("tag"),
 	)
 	lines = append(lines, from)
 
 	// If To is set, populate To next
 	to := fmt.Sprintf(
 		"To: %s <%s>",
-		h.To, h.ToUri,
+		h.To.Value(), h.To.Uri(),
 	)
-	if c.ToTag != "" {
-		to += ";tag=" + c.ToTag
+	if h.To.Param("tag") != "" {
+		to += ";tag=" + h.To.Param("tag")
 	}
 	lines = append(lines, to)
 
 	// Set contact always. If Contact is empty, use From
-	if h.Contact == "" {
-		h.Contact = h.FromUri
+	if len(h.Contacts) == 0 {
+		contact := NewHeader(&Contact{}).SetUri(h.From.Uri()).SetValue(h.From.Value())
+		h.Contacts = []Header{contact}
 	}
-	contact := fmt.Sprintf("Contact: <%s>", h.Contact)
-	lines = append(lines, contact)
+	for _, contact := range h.Contacts {
+		result := "Contact: " + strings.Join([]string{contact.Value(),
+			fmt.Sprintf("<%s>", contact.Uri())},
+			" ")
+		result += contact.ParamString()
+		lines = append(lines, result)
+	}
 
 	// set call id
 	id := fmt.Sprintf("Call-ID: %s", c.CallId)
