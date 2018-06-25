@@ -34,6 +34,29 @@ func TestParseInvite(t *testing.T) {
 	}
 }
 
+func TestParseRegister(t *testing.T) {
+	if data, err := ioutil.ReadFile("examples/register.sip"); err == nil {
+		text := string(data)
+		message := Register{}
+		err = message.Parse(text)
+		if err != nil {
+			t.Fail()
+		}
+		// check to ensure fields unmarshalled correctly
+		assert.Equal(t, message.Method(), "REGISTER")
+		assert.Equal(t, message.Headers().To.Value(), "Bob")
+		assert.Equal(t, message.Headers().To.Uri(), "sip:bob@biloxi.com")
+		assert.Equal(t, message.Headers().From.Value(), "Bob")
+		assert.Equal(t, message.Headers().From.Uri(), "sip:bob@biloxi.com")
+		assert.Equal(t, message.Control().Sequence, 314)
+		assert.Equal(t, "54548", message.Headers().From.Param("tag"))
+		assert.Equal(t, message.Control().CallId, "a84b4c76e66710@pc33.atlanta.com")
+		assert.Equal(t, message.Control().Via[0][0], "TCP")
+		assert.Equal(t, message.Control().Via[0][1], "pc33.atlanta.com")
+		assert.Equal(t, "biloxi.com", message.Uri())
+	}
+}
+
 func TestRenderInvite(t *testing.T) {
 	callId := uuid.New()
 	expected := fmt.Sprintf(`INVITE sip:sally@nasa.gov SIP/2.0

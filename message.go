@@ -36,6 +36,7 @@ type Message interface {
 	Parse(string) error
 	// Get the method/request type of the message
 	Method() string
+	Uri() string
 	Headers() *CommonHeaders
 	RawHeaders() string
 	Control() *CallControlHeaders
@@ -209,6 +210,7 @@ func parseFromTo(value string, from Header) (err error) {
 	from.SetUri(strings.Replace(parts[1], ">", "", 1))
 	// now find the from tag, if present, and store it
 	for _, param := range params[1:] {
+		param = strings.TrimSpace(param)
 		if strings.HasPrefix(param, "tag=") {
 			parts = strings.SplitN(param, "=", 2)
 			from.SetParam("tag", parts[1])

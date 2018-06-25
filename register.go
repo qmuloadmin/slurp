@@ -44,8 +44,12 @@ func (r *Register) Parse(message string) (err error) {
 	return
 }
 
+func (r *Register) Uri() string {
+	return r.uri
+}
+
 func (r *Register) Method() string {
-	return "Register"
+	return "REGISTER"
 }
 
 func (r *Register) Headers() *CommonHeaders {

@@ -41,6 +41,10 @@ func (i *Invite) Parse(message string) (err error) {
 	return
 }
 
+func (i *Invite) Uri() string {
+	return i.uri
+}
+
 func (i *Invite) Method() string {
 	return "INVITE"
 }
